@@ -1,0 +1,301 @@
+with all_data as (
+SELECT
+provider_name,
+bandwidth,
+participant_no
+  
+FROM
+data.benchmark_pivot_v65
+
+WHERE
+(pn like 'IV%' or pn like 'IT01V%')
+AND
+stype = 'inbound-rtp'
+AND
+(pn not like 'IT01V1234' or pn not like 'IV1234')
+AND
+uniquepn != ({{uniquepnFilter.value}})
+AND
+participant_no = ({{pno2.value}})
+AND
+bandwidth = ({{bw2.value}})
+AND
+provider_name = ANY({{ pname2.value }})
+),
+
+long_query as (
+SELECT
+fq.provider_name,
+fq.bandwidth,
+fq.participant_no,
+avg((fq.frameHeightDeltaPctFixed + fq.frameWidthDeltaPctFixed)/2) frameSizeDeltaPct_avg,
+avg(fq.framerateDeltaPctFixed) as framerateDeltaPct_avg,
+avg(fq.bitrateDeltaPctFixed) as bitrateDeltaPct_avg,
+avg(fq.callLengthFreezeDeltaPctFixed) as callLengthFreezeDeltaPct_avg,
+max(fq.totalfreezesduration) as totalfreezesduration,
+--avg(fq.freezecount) as freezecount,
+avg(max(fq.freezecount)) over (partition by max(fq.uniquepn), max(fq.mvo)) as test,
+avg((cast(max(-fq.smoothnessDelta) as double precision) / (cast(-60 as double precision)))*100) over (partition by max(uniquepn), max(mvo)) as smoothnessDeltaPct,
+max(fq.smoothnessDelta) as smoothnessDelta,
+max(fq.callLength) as callLength
+--sum (cast(max(fq.callLength) as double precision) / NULLIF(cast(avg(fq.freezecount) as double precision), 0)) over (partition by fq.provider_name, fq.bandwidth, fq.participant_no) as freezecount_sec_avg
+--max(cast(fq.callLength as double precision) / NULLIF(cast(fq.freezecount as double precision), 0)) as freezecount_sec_avg
+
+FROM
+(SELECT
+tq.provider_name,
+tq.bandwidth,
+tq.participant_no,
+tq.uniquepn,
+tq.mvo,
+max(tq.freezecount) as freezecount,
+max(tq.callLength) as callLength,
+max(tq.totalfreezesduration) as totalfreezesduration,
+sum(100 - tq.frameHeightDeltaPct) as frameHeightDeltaPctFixed,
+sum(100 - tq.frameWidthDeltaPct) as frameWidthDeltaPctFixed,
+sum(100 - tq.framerateDeltaPct) as framerateDeltaPctFixed,
+sum(100 - tq.bitrateDeltaPct) as bitrateDeltaPctFixed,
+sum(100 - tq.callLengthFreezeDeltaPct) as callLengthFreezeDeltaPctFixed, 
+sum(0 - tq.framesdecoded_sec_diff) as smoothnessDelta
+
+FROM
+(SELECT
+sq.uniquepn as uniquepn,
+sq.pn as pn,
+sq.mvo as mvo,
+sq.stype as stype,
+sq.provider_name as provider_name,
+sq.bandwidth as bandwidth,
+sq.participant_no as participant_no,
+sq.frameheight as frameheight,
+sq.framewidth as framewidth,
+sq.targetFrameHeight as targetFrameHeight,
+sq.targetFrameWidth as targetFrameWidth,
+sq.frameHeightDelta as frameHeightDelta,
+sq.frameWidthDelta as frameWidthDelta,
+sq.bytesreceived_in_bits_sec as bytesreceived_in_bits_sec,
+sq.targetBitrate as targetBitrate,
+sq.bitrateDelta as bitrateDelta,
+sq.framesdecoded_sec as framesdecoded_sec,
+sq.targetFramerate as targetFramerate,
+sq.targetPauseFreeze as targetPauseFreeze,
+sq.framesDecoded_sec_delta as framesDecoded_sec_delta,
+sq.totalfreezesduration as totalfreezesduration,
+sq.callLength as callLength,
+sq.callLengthFreezeDelta as callLengthFreezeDelta,
+max(sq.freezecount) as freezecount,
+sq.totalpausesduration as totalpausesduration,
+sq.framesdecoded_sec - sq.previous_framesdecoded_sec as framesdecoded_sec_diff,
+--sq.callLengthPausesDelta as callLengthPausesDelta,
+max((cast(sq.frameHeightDelta as double precision) / (cast(sq.targetFrameHeight as double precision)))*100) over (partition by uniquepn, mvo) as frameHeightDeltaPct,
+max((cast(sq.frameWidthDelta as double precision) / (cast(sq.targetFrameWidth as double precision)))*100) over (partition by uniquepn, mvo) as frameWidthDeltaPct,
+case when(max((cast(sq.framesDecoded_sec_delta as double precision) / (cast(sq.targetFramerate as double precision)))*100) over (partition by uniquepn, mvo)) < 0 then 0 else (max((cast(sq.framesDecoded_sec_delta as double precision) / (cast(sq.targetFramerate as double precision)))*100) over (partition by uniquepn, mvo)) end as framerateDeltaPct,
+case when(max((cast(sq.bitrateDelta as double precision) / (cast(sq.targetBitrate as double precision)))*100) over (partition by uniquepn, mvo)) < 0 then 0 else (max((cast(sq.bitrateDelta as double precision) / (cast(sq.targetBitrate as double precision)))*100) over (partition by uniquepn, mvo)) end as bitrateDeltaPct,
+case when abs(max((NULLIF(cast(sq.callLengthFreezeDelta as double precision),0) / NULLIF(cast(sq.callLength as double precision), 0))*100)  over (partition by uniquepn, mvo)) is null then 0 else abs(max((NULLIF(cast(sq.callLengthFreezeDelta as double precision),0) / NULLIF(cast(sq.callLength as double precision), 0))*100)  over (partition by uniquepn, mvo)) end as callLengthFreezeDeltaPct
+--max((NULLIF(cast(sq.callLengthFreezeDelta as double precision),0) / NULLIF(cast(sq.callLength as double precision), 0))*100)  over (partition by uniquepn, mvo) as callLengthFreezeDeltaPct
+
+FROM
+(SELECT
+fq.uniquepn as uniquepn,
+fq.pn as pn,
+fq.mvo as mvo,
+fq.stype as stype,
+fq.provider_name as provider_name,
+fq.bandwidth as bandwidth,
+fq.participant_no as participant_no,
+fq.frameheight as frameheight,
+fq.framewidth as framewidth,
+{{tResolutionHeight.value}} as targetFrameHeight,
+{{tPauseFreeze.value}} as targetPauseFreeze,
+{{tResolutionWidth.value}} as targetFrameWidth,
+sum({{tResolutionHeight.value}} - fq.frameheight) as frameHeightDelta,
+sum({{tResolutionWidth.value}} - fq.framewidth) as frameWidthDelta,
+fq.bytesreceived_in_bits_sec as bytesreceived_in_bits_sec,
+{{tBitrate.value}} as targetBitrate,
+sum({{tBitrate.value}} - fq.bytesreceived_in_bits_sec) as bitrateDelta,
+fq.framesdecoded_sec as framesdecoded_sec,
+lag(fq.framesdecoded_sec, 1) over (partition by fq.uniquepn, fq.pn, fq.stype, fq.provider_name, fq.bandwidth order by fq.mvo) as previous_framesdecoded_sec,
+{{tFramerate.value}} as targetFramerate,
+sum({{tFramerate.value}} - fq.framesdecoded_sec) as framesDecoded_sec_delta,
+fq.totalfreezesduration as totalfreezesduration,
+{{callLength.value}} as callLength,
+sum({{tPauseFreeze.value}} - fq.totalfreezesduration) as callLengthFreezeDelta,
+max(fq.freezecount) as freezecount,
+fq.totalpausesduration as totalpausesduration
+
+from (SELECT
+uniquepn,
+pn,
+mvo,
+stype,
+provider_name,
+bandwidth,
+participant_no,
+frameheight,
+framewidth,
+bytesreceived_in_bits_sec,
+framesdecoded_sec,
+freezecount,
+pausecount,
+totalfreezesduration,
+totalpausesduration
+
+
+FROM
+data.benchmark_pivot_v65
+
+WHERE
+(pn like 'IV%' or pn like 'IT01V%')
+AND
+stype = 'inbound-rtp'
+AND
+(pn not like 'IT01V1234' or pn not like 'IV1234')
+AND
+uniquepn != ({{uniquepnFilter.value}})
+AND
+participant_no = ({{pno2.value}})
+AND
+bandwidth = ({{bw2.value}})
+AND
+provider_name = ANY({{ pname2.value }}) ) as fq
+
+GROUP BY
+uniquepn,
+pn,
+mvo,
+stype,
+provider_name,
+bandwidth,
+participant_no,
+frameheight,
+framewidth,
+targetPauseFreeze,
+targetFrameHeight,
+targetFrameWidth,
+bytesreceived_in_bits_sec,
+targetBitrate,
+framesdecoded_sec,
+targetFramerate,
+totalfreezesduration,
+totalpausesduration ) as sq
+
+GROUP BY
+sq.uniquepn,
+sq.pn,
+sq.mvo,
+sq.stype,
+sq.provider_name,
+sq.bandwidth,
+sq.participant_no,
+sq.frameheight,
+sq.framewidth,
+sq.targetFrameHeight,
+sq.targetFrameWidth,
+sq.frameHeightDelta,
+sq.frameWidthDelta,
+sq.bytesreceived_in_bits_sec,
+sq.targetBitrate,
+sq.bitrateDelta,
+sq.targetPauseFreeze,
+sq.framesdecoded_sec,
+sq.targetFramerate,
+sq.bitrateDelta,
+sq.totalfreezesduration,
+sq.callLength,
+sq.framesdecoded_sec,
+sq.previous_framesdecoded_sec,
+sq.callLengthFreezeDelta,
+sq.totalpausesduration,
+sq.framesDecoded_sec_delta ) as tq
+ 
+group by
+tq.provider_name,
+tq.bandwidth,
+tq.participant_no,
+tq.uniquepn,
+tq.mvo,
+tq.frameHeightDeltaPct,
+tq.frameWidthDeltaPct,
+tq.framerateDeltaPct,
+tq.bitrateDeltaPct,
+tq.callLengthFreezeDeltaPct ) fq
+
+group BY
+fq.provider_name,
+fq.bandwidth,
+fq.participant_no
+),
+
+
+freeze_cnt_query as (
+SELECT
+fq1.provider_name,
+fq1.bandwidth,
+fq1.participant_no,
+avg(cast(fq1.freezecount_max as double precision)) as avg_freeze_count,
+avg(cast(fq1.totalfreezesduration_max as double precision)) as avg_totalfreezesduration
+
+FROM
+(SELECT
+uniquepn,
+provider_name,
+bandwidth,
+participant_no,
+max(freezecount) as freezecount_max,
+max(totalfreezesduration) as totalfreezesduration_max
+  
+FROM
+data.benchmark_pivot_v65
+
+WHERE
+(pn like 'IV%' or pn like 'IT01V%')
+AND
+stype = 'inbound-rtp'
+AND
+(pn not like 'IT01V1234' or pn not like 'IV1234')
+AND
+uniquepn != ({{uniquepnFilter.value}})
+AND
+participant_no = ({{pno2.value}})
+AND
+bandwidth = ({{bw2.value}})
+AND
+provider_name = ANY({{ pname2.value }})
+
+group BY
+uniquepn,
+provider_name,
+bandwidth,
+participant_no ) as fq1
+
+group BY
+fq1.provider_name,
+fq1.bandwidth,
+fq1.participant_no
+)
+
+SELECT
+all_data.provider_name,
+all_data.bandwidth,
+all_data.participant_no,
+max(abs(long_query.smoothnessDeltaPct)) as smoothnessDeltaPct,
+--max(long_query.smoothnessDelta) as smoothnessDelta,
+max(long_query.frameSizeDeltaPct_avg) as framesizedletapct_avg,
+max(long_query.framerateDeltaPct_avg) as frameratedeltapct_avg,
+max(long_query.bitrateDeltaPct_avg) as bitratedeltapct_avg,
+max(long_query.callLengthFreezeDeltaPct_avg) as calllengthfreezedeltapct_avg,
+max(freeze_cnt_query.avg_freeze_count) as avg_freeze_count,
+max(freeze_cnt_query.avg_totalfreezesduration) as avg_totalfreezesduration,
+max(long_query.totalfreezesduration) as totalfreezesduration,
+sum (cast(max(freeze_cnt_query.avg_totalfreezesduration) as double precision) / NULLIF(cast(avg(freeze_cnt_query.avg_freeze_count) as double precision), 0)) over (partition by all_data.provider_name, all_data.bandwidth, all_data.participant_no) as freezecount_sec_avg
+
+FROM
+all_data
+inner join long_query ON long_query.provider_name = all_data.provider_name AND long_query.bandwidth = all_data.bandwidth AND long_query.participant_no = all_data.participant_no
+
+inner join freeze_cnt_query on freeze_cnt_query.provider_name = all_data.provider_name AND freeze_cnt_query.bandwidth = all_data.bandwidth AND freeze_cnt_query.participant_no = all_data.participant_no
+
+group by 
+all_data.provider_name,
+all_data.bandwidth,
+all_data.participant_no
